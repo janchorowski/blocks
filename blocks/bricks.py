@@ -18,6 +18,24 @@ logging.basicConfig()
 logger = logging.getLogger(__name__)
 
 
+class Undefined(object):
+    """The class of the `UNDEF` value.
+
+    The sole purpose of this class is to create an object `UNDEF`. This
+    object has semantics of an undefined configuration setting.
+
+    `UNDEF` always evaluates to `False`, just like `None`.
+
+    """
+    def __nonzero__(self):
+        return False
+
+    def __repr__(self):
+        return 'UNDEF'
+
+UNDEF = Undefined()
+
+
 class LazyInitializationError(ValueError):
     def __init__(self, message, arg):
         super(Exception, self).__init__(message)
@@ -37,15 +55,19 @@ class Brick(object):
     before calling the methods that require them (such as :meth:`allocate`,
     :meth:`initialize`), and application methods.
 
+    To turn off lazy initialization in general set `Brick.lazy_init =
+    False`.
+
     By default, Bricks will try to initialize their parameters when being
-    applied for the first time. To turn this off for all Bricks set
-    `Bricks.initialize` to `False`.
+    applied for the first time (eager application). To turn this off and
+    enable "lazy application" for all Bricks set `Bricks.lazy_apply` to
+    `True`.
 
     Parameters
     ----------
     name : str, optional
         The name of this brick. This can be used to filter the application
-        of certain modifications by brick names. By default the brick
+        of certain modifications by brick names. By default, the brick
         receives the name of its class (lowercased). The name is expected
         to be unique within a block.
     rng : object, optional
@@ -54,11 +76,17 @@ class Brick(object):
 
     Attributes
     ----------
-    initialize : bool
-        `True` for blocks which are eager and who will try to initialize
-        their parameters before being applied. Setting this to `False`
-        means that :meth:`initialize` needs to be called manually before
-        running the compiled Theano function.
+    lazy_init : bool
+        `True` by default, allowing blocks to be configured in a lazy
+        manner. This means that not all parameters have to be passed to the
+        constructor by default. Parameters not passed will be set to
+        :class:`Uninitialized` instead. Set to `False` to disable lazy
+        initialization.
+    lazy_apply : bool
+        `False` by default, making blocks eager which means they will try
+        to initialize their parameters before being applied. Setting this
+        to `True` means that :meth:`initialize` needs to be called manually
+        before running the compiled Theano function.
     params : list of Theano shared variables
         After calling the :meth:`allocate` method this attribute will be
         populated with the shared variables storing this brick's
@@ -82,31 +110,44 @@ class Brick(object):
     variables. These methods should be decorated with the
     :meth:`apply_method` decorator.
 
+    To provide support for lazy initialization, apply the :meth:`lazy`
+    decorator to the :meth:`__init__` method.
+
     Examples
     --------
-    Two example usage patterns of bricks are as follows:
+    A simple usage of a brick is as follows:
 
-    >>> x = theano.tensor.vector()
-    >>> linear = Linear(5, 3, weights_init=IsotropicGaussian(),
-                        biases_init=Constant(0))
-    >>> linear.apply(x)
-    brick_linear_output_0
+    >>> import theano
+    ... from blocks.initialization import IsotropicGaussian, Constant
+    ... x = theano.tensor.vector()
+    ... linear = Linear(5, 3, weights_init=IsotropicGaussian(),
+    ...                 biases_init=Constant(0))
+    ... linear.apply(x)
 
-    More fine-grained control is also possible. This example uses lazy
-    initialization and only initializes the parameters of the brick after
-    construction the computational graph.
+    By default, bricks have lazy initialization enabled.
 
-    >>> Brick.initialize = False
-    >>> linear = Linear(5, weights_init=IsotropicGaussian(),
-                        use_bias=False)
-    >>> linear.apply(x)
-    brick_linear_output_0
-    >>> layer.output_dim = 3
-    >>> linear.initialize()
+    >>> from blocks.initialization import IsotropicGaussian, Constant
+    ... linear = Linear(input_dim=5, weights_init=IsotropicGaussian(),
+    ...                 biases_init=Constant(0))
+    ... linear.output_dim = 3
+    ... linear.apply(x)
+
+    Bricks also support lazy application, which means that they will not
+    try to initialize their parameters before building the Theano
+    expression. This allows you to postpone configuring your block even
+    further.
+
+    >>> Brick.lazy_apply = True
+    ... linear = Linear(5, weights_init=IsotropicGaussian(),
+    ...                 use_bias=False)
+    ... linear.apply(x)
+    ... layer.output_dim = 3
+    ... linear.initialize()
 
     """
     __metaclass__ = ABCMeta
-    initialize = True
+    lazy_init = True
+    lazy_apply = False
 
     def __init__(self, name=None, rng=None):
         if name is None:
@@ -119,6 +160,17 @@ class Brick(object):
         self.allocated = False
         self.initialized = False
 
+        if not self.lazy_init:
+            self.initialize()
+
+    def __getattribute__(self, name):
+        value = super(Brick, self).__getattribute__(name)
+        if value is UNDEF:
+            raise LazyInitializationError(
+                "{}: {} has not been initialized".
+                format(self.__class__.__name__, name), name)
+        return value
+
     @staticmethod
     def apply_method(func):
         """Wraps methods that apply a brick to inputs in different ways.
@@ -127,48 +179,49 @@ class Brick(object):
         of the Theano variables, such as tagging them with the brick that
         created them and naming them.
 
-        Wrapped application methods accept the `initialize` keyword
-        argument. By default this is set to `True`, which will attempt to
-        initialize the brick with the current configuration. If this fails
-        because some configuration is missing, a warning will be given.
-        Prevent this behaviour by setting `initialize` to `False`, in which
-        case the layer will not try to initialize itself.
+        By default, application methods are eager, and will try to
+        initialize the parameters of the brick. If the configuration of
+        this brick is insufficient to do so, an exception will be raised
+        (usually a :class:`LazyInitizializationError`). To prevent this
+        from happening, one can set `Brick.lazy_apply = True`, in which
+        case the parameters need to be initialized manually with a call to
+        :meth:`initialize` before using the resulting Theano function.
+
+        Application methods will allocate the brick parameters with a call
+        :meth:`allocate` if they have not been allocated already.
 
         Parameters
         ----------
-        apply : method
+        func : method
             A method which takes Theano variables as an input, and returns
             the output of the Brick
 
         Raises
         ------
-        ValueError
-            If the parameters of this brick have not been allocated yet. In
-            order to allocate them, use the :meth:`allocate` method.
         LazyInitializationError
             If parameters needed to perform the application of this brick
             have not been provided yet.
 
         """
-        def wrapped_apply(self, *states_below, **kwargs):
+        def wrapped_apply(self, *inputs, **kwargs):
             if not self.allocated:
                 self.allocate()
-            if not self.initialized and self.initialize:
+            if not self.initialized and not self.lazy_apply:
                 try:
                     self.initialize()
                 except LazyInitializationError as e:
                     reraise_as(LazyInitializationError(
                         "`{}`: Unable to initialize parameters because of "
                         "missing configuration (`{}`). Either set this "
-                        "configuration value, or set the `initialize` "
-                        "attribute to `False` to prevent `{}` from trying to "
+                        "configuration value, or set the `lazy_apply` "
+                        "attribute to `True` to prevent `{}` from trying to "
                         "initialize the parameters.".format(
                             self.__class__.__name__, e.arg, func.__name__),
                         e.arg))
-            states_below = list(states_below)
-            for i, state_below in enumerate(states_below):
-                states_below[i] = state_below.copy()
-            outputs = pack(func(self, *states_below, **kwargs))
+            inputs = list(inputs)
+            for i, inp in enumerate(inputs):
+                inputs[i] = inp.copy()
+            outputs = pack(func(self, *inputs, **kwargs))
             for output in outputs:
                 # TODO Tag with dimensions, axes, etc. for error-checking
                 output.tag.owner_brick = self
@@ -179,10 +232,8 @@ class Brick(object):
     def lazy(func):
         """Makes the initialization lazy.
 
-        All the positional arguments and keyword arguments are set as class
-        properties. If their value is None, they are assumed to be
-        uninitialized. If an attribute is uninitialized, it will result in
-        an error when it is requested.
+        Any positional argument not given will be set to UNDEF. Positional
+        arguments can also be given as keyword arguments.
 
         Parameters
         ----------
@@ -193,50 +244,44 @@ class Brick(object):
         --------
 
         >>> class SomeBrick(Brick):
-        ...     @lazy
-        ...     def __init__(self, a, b=True, c=None):
-        ...         print self.a
-        ...         pass
-        >>> brick = SomeBrick(2)
-        2
-        >>> brick.c
-        LazyInitializationError: SomeBrick: c has not been initialized
+        ...     @Brick.lazy
+        ...     def __init__(self, a, b, c='c', d=None):
+        ...         print a, b, c, d
+        >>> brick = SomeBrick('a')
+        a UNDEF c None
+        >>> brick = SomeBrick(d='d', b='b')
+        UNDEF b c d
+        >>> Brick.lazy_init = False
+        >>> brick = SomeBrick('a')
+        Traceback (most recent call last):
+          File "<stdin>", line 1, in <module>
+        TypeError: __init__() takes at least 3 arguments (2 given)
+        >>> brick = SomeBrick('a', 'b')
+        a b c None
 
         """
-        def make_getter(arg_name):
-            def getter(self):
-                if not hasattr(self, '_' + arg_name):
-                    raise LazyInitializationError(
-                        "{}: {} has not been initialized".
-                        format(self.__class__.__name__, arg_name), arg_name)
-                else:
-                    return getattr(self, '_' + arg_name)
-            return getter
-
-        def make_setter(arg_name):
-            def setter(self, val):
-                setattr(self, '_' + arg_name, val)
-            return setter
-
         arg_spec = inspect.getargspec(func)
         arg_names = arg_spec.args[1:]
         defaults = arg_spec.defaults
-        getters, setters = [], []
-        for arg_name in arg_names:
-            getters.append(make_getter(arg_name))
-            setters.append(make_setter(arg_name))
 
         def init(self, *args, **kwargs):
-            for arg_name, getter, setter in zip(arg_names, getters, setters):
-                setattr(self.__class__, arg_name, property(getter, setter))
-            for arg_name, arg in zip(arg_names[::-1], defaults[::-1]):
-                if arg is not None:
-                    setattr(self, arg_name, arg)
-            for arg_name, arg in zip(arg_names, args):
-                setattr(self, arg_name, arg)
-            for arg_name, arg in kwargs.iteritems():
-                setattr(self, arg_name, arg)
-            func(self, *args, **kwargs)
+            if not self.lazy_init:
+                return func(self, *args, **kwargs)
+            # Fill any missing positional arguments with UNDEF
+            args = args + (UNDEF,) * (len(arg_names) - len(defaults) -
+                                      len(args))
+
+            # Check if positional arguments were passed as keyword arguments
+            args = list(args)
+            for i, arg_name in enumerate(arg_names[:-len(defaults)]):
+                if arg_name in kwargs:
+                    if args[i] is not UNDEF:
+                        raise ValueError("Positional argument `{}` at index "
+                                         "{} was also given as a keyword".
+                                         format(arg_name, i))
+                    args[i] = kwargs.pop(arg_name)
+
+            return func(self, *args, **kwargs)
         return init
 
     def allocate(self):
@@ -244,16 +289,16 @@ class Brick(object):
 
         Based on the current configuration of this brick, such as the
         number of inputs, the output mode, etc. create Theano shared
-        variables to store the parameters. This method must be called
-        *before* calling the brick's :meth:`apply` method. After
-        allocation, parameters are accessible through the :attr:`params`
-        attribute.
+        variables to store the parameters. This method will be called by
+        every application method. After allocation, parameters are
+        accessible through the :attr:`params` attribute.
 
         Raises
         ------
         ValueError
-            If the state of this brick is insufficient to determine the
-            number of parameters or their dimensionality to be initialized.
+            If the configuration of this brick is insufficient to determine
+            the number of parameters or their dimensionality to be
+            initialized.
 
         Notes
         -----
@@ -282,7 +327,15 @@ class Brick(object):
         """
         if not self.allocated:
             self.allocate()
-        self._initialize()
+        try:
+            self._initialize()
+        except Exception as e:
+            if self.lazy_init and not isinstance(e, LazyInitializationError):
+                reraise_as("Lazy initialization is enabled, so please make "
+                           "sure you have set all the required configuration "
+                           "for this method call.")
+            else:
+                raise
         self.initialized = True
 
     def _initialize(self):
@@ -298,15 +351,16 @@ class Linear(Brick):
     Parameters
     ----------
     input_dim : int
-        The dimension of the input.
+        The dimension of the input. Required by :meth:`initialize`.
     output_dim : int
-        The dimension of the output.
+        The dimension of the output. Required by :meth:`initialize`.
     weights_init : object
-        A `NdarrayInitialization` instance which will be used by the
-        :meth:`initialize` method to initialize the weight matrix.
+        A `NdarrayInitialization` instance which will be used by to
+        initialize the weight matrix. Required by :meth:`initialize`.
     biases_init : object, optional
         A `NdarrayInitialization` instance that will be used to initialize
-        the biases. Required when `use_bias` is `True`.
+        the biases. Required by :meth:`initialize` when `use_bias` is
+        `True`.
     use_bias : bool, optional
         Whether to use a bias. Defaults to `True`.
 
@@ -324,8 +378,10 @@ class Linear(Brick):
 
     """
     @Brick.lazy
-    def __init__(self, input_dim=None, output_dim=None, weights_init=None,
+    def __init__(self, input_dim, output_dim, weights_init,
                  biases_init=None, use_bias=True, **kwargs):
+        self.__dict__.update(locals())
+        del self.self
         super(Linear, self).__init__(**kwargs)
 
     def _allocate(self):
@@ -343,32 +399,29 @@ class Linear(Brick):
                                      (self.input_dim, self.output_dim))
 
     @Brick.apply_method
-    def apply(self, *states_below):
+    def apply(self, inp):
         if self.use_bias:
             W, b = self.params
         else:
             W, = self.params
-        states = []
-        for state_below in states_below:
-            state = tensor.dot(state_below, W)
-            if self.use_bias:
-                state += b
-            states.append(state)
-        return states
+        output = tensor.dot(inp, W)
+        if self.use_bias:
+            output += b
+        return output
 
 
 class Tanh(Brick):
     @Brick.apply_method
-    def apply(self, *states_below):
-        states = [tensor.tanh(state) for state in states_below]
-        return states
+    def apply(self, inp):
+        output = tensor.tanh(inp)
+        return output
 
 
 class Softmax(Brick):
     @Brick.apply_method
-    def apply(self, state_below):
-        state = tensor.nnet.softmax(state_below)
-        return state
+    def apply(self, inp):
+        output = tensor.nnet.softmax(inp)
+        return output
 
 
 class Cost(Brick):
@@ -378,5 +431,5 @@ class Cost(Brick):
 class CrossEntropy(Cost):
     @Brick.apply_method
     def apply(self, y, y_hat):
-        state = -(y * tensor.log(y_hat)).sum(axis=1).mean()
-        return state
+        cost = -(y * tensor.log(y_hat)).sum(axis=1).mean()
+        return cost
