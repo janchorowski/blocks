@@ -18,8 +18,13 @@ Created on Oct 8, 2014
 @author: Jan
 '''
 
+__all__ = ['Conf']
+
 import re
 from pprint import pprint
+
+class AmbiguousSpecificity(Exception):
+    pass
 
 #useful regexpes
 __first_single_slash = re.compile('^/[^/]')
@@ -135,7 +140,7 @@ class Conf(object):
     - an empty name (//) means descend into this and all levels below 
     """
     
-    def __init__(self, conf_dict, location=[], _reuse_conf_dict=False):
+    def __init__(self, conf_dict={}, location=[], _reuse_conf_dict=False):
         if isinstance(location, str):
             location = [location]
         check_valid_paths(location)
@@ -215,9 +220,15 @@ class Conf(object):
         matches.sort(reverse=True) #best match is first
         if matches[0][0] > matches[1][0]:
             return matches[0][-1] #ok, the best match is more specific than any other
-        raise KeyError('Selectors %s match path %s with the same specificity of %s' %(
+        raise AmbiguousSpecificity('Selectors %s match path %s with the same specificity of %s' %(
                 ' and '.join(m[0] for m in matches if m[0]==matches[0][0]),
                 _selector_path_join_valid(*path_parts), matches[0][0]))
+
+    def get(self, path, default=None):
+        try:
+            return self.__getitem__(path)
+        except KeyError:
+            return default
 
     def __setitem__(self, selector, value):
         if isinstance(selector, str):
@@ -226,11 +237,13 @@ class Conf(object):
         s = _selector_path_join_valid(*path_parts)
         self._cd[s]=value
 
-    def get_for(self, name):
+    def subconf(self, name):
         check_valid_paths([name])
-        return Conf(self._cd, self._location + [name], _reuse_conf_dict=True)
+        ret = Conf(self._cd, self._location + [name], _reuse_conf_dict=True)
+        ret['name'] = name
+        return ret
 
-    def set(self, opts):
+    def update(self, opts):
         for s,v in opts:
             check_valid_selectors(s)
             assert not isinstance(v, Conf)

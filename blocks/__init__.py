@@ -1,10 +1,6 @@
 """The blocks library for parameterized Theano ops"""
 import numpy as np
-
-BLOCK_PREFIX = 'block'
-DEFAULT_SEED = [2014, 10, 5]
-SEPARATOR = '_'
-
+from hierarchiconf import Conf
 
 class Block(object):
     """Blocks are groups of bricks with a particular function.
@@ -26,19 +22,7 @@ class Block(object):
 
     Parameters
     ----------
-    name : str, optional
-        The name of this brick. This can be used to filter the application
-        of certain modifications by block names. By default the block
-        receives the name of its class (lowercased). If this block is
-        nested, the name is expected to be unique within its parent block.
-    rng : object, optional
-        A `numpy.random.RandomState` object. This RNG will be passed to all
-        its children.
-    initialize : bool, optional
-        If `True` then the parameters of this brick will automatically be
-        allocated and initialized by calls to the :meth:`allocate` and
-        :meth:`initialize`. If `False` these methods need to be called
-        manually after initializing. Defaults to `True`.
+    conf: hierarchical configuration
 
     Attributes
     ----------
@@ -48,11 +32,13 @@ class Block(object):
         bricks can also be part of other blocks.
 
     """
-    def __init__(self, name=None, rng=None, initialize=True):
-        if name is None:
-            name = self.__class__.__name__.lower()
-        self.name = '{}{}{}'.format(BLOCK_PREFIX, SEPARATOR, name)
-        if rng is None:
-            rng = np.random.RandomState(DEFAULT_SEED)
-        self.rng = rng
-        self.initialize = initialize
+    def __init__(self, conf=Conf()):
+        self.conf = conf
+        self.name = conf['name']
+        self.children = []
+    
+    def add_child(self, child):
+        names = set(c.name for c in self.children)
+        if child.name in names:
+            raise Exception("Repeated name for child: %s" % (child.name,))
+        self.children.append(child)

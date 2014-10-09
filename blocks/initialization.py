@@ -67,7 +67,6 @@ class Constant(NdarrayInitialization):
         dest[...] = self._constant
         return dest
 
-
 class IsotropicGaussian(NdarrayInitialization):
     """
     Initialize parameters from an isotropic Gaussian distribution.
