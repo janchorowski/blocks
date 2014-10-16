@@ -1,10 +1,12 @@
 '''
-Hierarchical configuration module
+Hierarchical configuration module.
 
-Selectors are specified keys of the configuration dict.
-Paths are fully specified names of objects that are fetched form the configuration.
+Key concepts: the configuration behaves like a dict from `paths` to values. A path is
+a string of Python identifiers separated by single forward slashes ('/').
 
-Paths are python identifiers separated by single slashes
+Internally the configuration is a list of `selector`-`value` pairs. A `path` can match a `selector` 
+with a given specificity. The specificity us used to reslove ties between multiple selectors matching 
+the same path.
 
 Selectors are sequences of identifiers or regular expressions seperated by 
 single or double slashes (a double slash matches zero or more levels of the hierarchy).
@@ -18,8 +20,28 @@ Created on Oct 8, 2014
 @author: Jan
 '''
 
+__all__ = ['Conf']
+
 import re
-from pprint import pprint
+from pprint import pformat
+
+class AmbiguousSpecificity(Exception):
+    """
+    Exception returned when two or more keys match a path with the same (maximal) specificity.
+    """
+
+
+# TODO: make path selectors be instances of this, then we can up-root a subconfig and keep the specificity
+# 
+#
+class Selector(object):
+    __slots__ = ['specificity', 'selector']
+    _base_specificity = (0,0)
+    
+    def __init__(self, selector, specificity=_base_specificity):
+        self.selector = selector
+        self.specificity = specificity
+    
 
 #useful regexpes
 __first_single_slash = re.compile('^/[^/]')
@@ -28,6 +50,8 @@ __valid_path = '^[^\d\W]\w*(?:/[^\d\W]\w*)*$' #single / separated python identif
 
 def check_valid_selectors(selector_parts):
     """
+    Selector parts form a selector by logically joining them with '/'.
+    
     Validate selector parts. Raise on wrong ones. Selectors have to be:
     - nonempty
     - can't begin or end with a single /
@@ -47,20 +71,24 @@ def check_valid_selectors(selector_parts):
 
 def check_valid_paths(path_parts):
     """
+    Path parts form a path by logically joining them with '/'.
+    
     Validate paths. returns True on success, raises on error.
     
     Paths are python identifiers separated by single slashes.
     """
     for pp in path_parts:
         if not pp:
-            raise Exception("Path elements can not be null.")
+            raise Exception("Path parts can not be null.")
         if not re.match(__valid_path, pp):
-            raise Exception('Path elements must be formed as python indentifiers separated by single slashes.')
+            raise Exception('Path parts must be formed as python indentifiers separated by single slashes.')
     return True
 
 def _selector_path_join_valid(*key_or_path_parts):
     """
-    Validate components then join making sure to not introduce extra slashes when concatenating // wildcards.
+    Internal method.
+    
+    Join parts assuming they are valid making sure to not introduce extra slashes when concatenating // wildcards.
     """
     #now we know that path components do not begin or end with single slashes
     joined = '/'.join(key_or_path_parts)
@@ -69,7 +97,7 @@ def _selector_path_join_valid(*key_or_path_parts):
 
 def _split_to_parts_valid(path_or_segments):
     """
-    Split path segments into parts.
+    Split path segments into parts assuming they were valid.
     """
     #note: this assumes that there are no empty path parts
     temp_parts = sum((p.split('/') for p in path_or_segments), [])
@@ -82,19 +110,34 @@ def _split_to_parts_valid(path_or_segments):
                 parts.append('//')
     return parts[1:]
 
-_base_specificity = [0,0]
-def _match(selector_parts, path_parts, allow_prefix_match, specificity):
+def _match(selector_parts, path_parts, do_prefix_match, specificity):
     """
-    Match a path (split into parts) to a key (path selector with wildcards). Return None if no match was found or the specificity of the best match.
+    Internal function: little validation is made.
+    
+    Match a path (split into parts) to a key (path selector with wildcards). 
+    Return None if no match was found or the specificity of the best match.
     
     Specificity measures how specific a match was. Its computation is similar to CSS:
     - the score is a tuple (count of exact name matches, count of regexp name patches)
     - the tuples are compared lexicographically
     - a single wildcard match // is the weakest match possible
     - we forbid matches with the same score
+    
+    Arguments:
+    ==========
+    
+    - selector_parts: (list of str) selector split into parts (wildcards '//', and regexpes)
+    - path_parts: (list of str) path split into single indentifiers along it
+    - do_prefix_match: if True only checks if the path matches the beginning of a selector. 
+      It returns the unmatched part of the selector.
+    - specificity: base specificity of the match. For recurrent calls only.
+    
     """
     if path_parts == []:
-        if allow_prefix_match or selector_parts==[]:
+        if do_prefix_match:
+            return selector_parts
+        
+        if selector_parts==[]:
             return specificity
         else:
             return None
@@ -105,11 +148,21 @@ def _match(selector_parts, path_parts, allow_prefix_match, specificity):
     selector_head = selector_parts[0]
     selector_tail = selector_parts[1:]
     if selector_head=='//':
-        matches = [None] # no match by default
-        for skipped_levels in xrange(len(path_parts)+1): #allow the match to th empty path
-            matches.append( _match(selector_tail, path_parts[skipped_levels:], 
-                                   allow_prefix_match, specificity) ) 
-        return max(matches)
+        #the // matches are minimal: they match only as little as possible to match the next path component
+        assert selector_tail #Conf.__setitem__ ensures that no selector can end in a wildcard
+        sekector_tail_head =selector_tail[0]
+        for skipped_levels in xrange(len(path_parts)): #allow the match to th empty path
+            skipped_head = path_parts[skipped_levels]
+            is_match = re.match(sekector_tail_head, skipped_head)
+            if is_match and is_match.end()==len(skipped_head):
+                return _match(selector_tail, path_parts[skipped_levels:], 
+                              do_prefix_match=do_prefix_match, specificity=specificity)
+        
+        #if we are here, then no path component matched the selector after wildcard
+        if do_prefix_match:
+            return selector_parts
+        else:
+            return None
     
     path_head = path_parts[0]
     is_match = re.match(selector_head, path_head)
@@ -120,22 +173,26 @@ def _match(selector_parts, path_parts, allow_prefix_match, specificity):
         else:
             new_specificity[1] += 1
         return _match(selector_tail, path_parts[1:],
-                      allow_prefix_match, new_specificity)
+                      do_prefix_match, new_specificity)
     else:
         return None
     
 class Conf(object):
     """
-    The basic configuration object: a dict from paths to values
+    The basic configuration object: a dict from path selectors to values
     
-    Path specification is similar to XPath:
-    Paths are composed of:
+    Path selectors are similar to XPath:
+    Selectors are composed of:
     - regular expressions for names
     - path separators /
-    - an empty name (//) means descend into this and all levels below 
+    - an empty name (//) allows for a minimal match over this and lower levels
+    - a path selector cannot end with a wildcard (//). Exception: the value must be a Conf object to recourse into. 
     """
+
+    _special_selectors = {'name': lambda self: self._location[-1],
+                          'location': lambda self: _selector_path_join_valid(*self._location)}
     
-    def __init__(self, conf_dict, location=[], _reuse_conf_dict=False):
+    def __init__(self, conf_dict={}, location=[], _reuse_conf_dict=False):
         if isinstance(location, str):
             location = [location]
         check_valid_paths(location)
@@ -147,43 +204,32 @@ class Conf(object):
             self._cd = {} #short for conf dict
             #flatten the namespace
             for s,v in conf_dict.iteritems():
-                check_valid_selectors(s)
-                if isinstance(v, Conf):
-                    #v's dict is already flattened: just do the concatenation
-                    
-                    #currently we don't support triming of a configuration to a 
-                    #locatiot
-                    assert v._location == []
-                    
-                    for ss, sv in v._cd.iteritems():
-                        assert not isinstance(sv, Conf)
-                        self._cd[_selector_path_join_valid(s,ss)] = sv
-                else:
-                    self._cd[s] = v
+                self[s] = v #defer all validations to __setitem__ to have common code!
     
     @staticmethod
-    def _match(selector, path_parts, allow_prefix_match=False):
+    def _match(selector, path_parts, do_prefix_match=False):
         check_valid_selectors(selector) #shouldn't be needed if we assume no one messes with out dict
         selector_parts = _split_to_parts_valid([selector])
         return _match(selector_parts, path_parts, 
-                      allow_prefix_match=allow_prefix_match, 
-                      specificity=_base_specificity)
-    
-    def _get_location_restricted_cd(self):
-        ret_cd = {}
-        for s,v in self._cd.iteritems():
-            if self._match(s, self._location, allow_prefix_match=True):
-                ret_cd[s]=v
-        return ret_cd
+                      do_prefix_match=do_prefix_match, 
+                      specificity=Selector._base_specificity)
     
     def __str__(self):    
-        return str(self._get_location_restricted_cd())
+        return 'Conf(%s)' % ( str(dict(self._iter_location_restricted_selectors())),)
     
     def __repr__(self):
-        return repr(self._get_location_restricted_cd())
+        return 'Conf(%s)' % ( pformat(dict(self._iter_location_restricted_selectors())), )
     
-    def pprint(self):
-        return pprint(self._get_location_restricted_cd())
+    def _debugprint(self):
+        ret = []
+        for s,v in self._cd.iteritems():
+            sel_suffix = self._match(s, self._location, do_prefix_match=True)
+            if sel_suffix is not None:
+                ret.append('%s:%s -> loc + %s' % (s, v, _selector_path_join_valid(*sel_suffix)))
+            else:
+                ret.append('%s:%s -> None' % (s, v))
+        ret = ['_location: %s' %(self._location, )] + sorted(ret)
+        return '\n'.join(ret)
     
     def _get_path_parts(self, path):
         _path = list(self._location)
@@ -201,6 +247,14 @@ class Conf(object):
         if isinstance(path, str):
             path = (path, )
         path_parts = self._get_path_parts(path)
+        
+        #special cases     
+        if path_parts[-1] in self._special_selectors:
+            if len(path_parts)==1+len(self._location):
+                return self._special_selectors[path_parts[-1]](self)
+            else:
+                return self.subconf(*path_parts[:-1])[path_parts[-1]]
+        
         matches = []
         for k,v in self._cd.iteritems():
             #do we need to validate the key here?
@@ -215,22 +269,51 @@ class Conf(object):
         matches.sort(reverse=True) #best match is first
         if matches[0][0] > matches[1][0]:
             return matches[0][-1] #ok, the best match is more specific than any other
-        raise KeyError('Selectors %s match path %s with the same specificity of %s' %(
-                ' and '.join(m[0] for m in matches if m[0]==matches[0][0]),
+        raise AmbiguousSpecificity('Selectors %s match path %s with the same specificity of %s' %(
+                ' and '.join(m[1] for m in matches if m[0]==matches[0][0]),
                 _selector_path_join_valid(*path_parts), matches[0][0]))
+
+    def get(self, path, default=None):
+        try:
+            return self.__getitem__(path)
+        except KeyError:
+            return default
+
+    def _iter_location_restricted_selectors(self):
+        for s,v in self._cd.iteritems():
+            sel_suffix = self._match(s, self._location, do_prefix_match=True)
+            if sel_suffix is not None:
+                yield _selector_path_join_valid(*sel_suffix), v
 
     def __setitem__(self, selector, value):
         if isinstance(selector, str):
-            path = (selector, )
-        path_parts = self._get_selector_parts(path)
-        s = _selector_path_join_valid(*path_parts)
-        self._cd[s]=value
+            selector = (selector, )
+        selector_parts = self._get_selector_parts(selector)
+        s = _selector_path_join_valid(*selector_parts)
+        
+        if selector_parts[-1] in self._special_selectors:
+            raise Exception('Special selector %s can not be set manually!' %(s[-1], ))
+        
+        if not isinstance(value, Conf):
+            if s.endswith('//'):
+                raise Exception("Selectors for values can not end with a wildcard ('//')")
+            self._cd[s] = value
+        else:
+            #v's dict is already flattened: just do the concatenation
+            
+            #currently we don't support triming of a configuration to a 
+            #locatiot
+            for sub_selector, sub_value in value._iter_location_restricted_selectors():
+                self[s, sub_selector] = sub_value
 
-    def get_for(self, name):
-        check_valid_paths([name])
-        return Conf(self._cd, self._location + [name], _reuse_conf_dict=True)
+    def subconf(self, *name):
+        if isinstance(name, str):
+            name = (name, )
+        name_parts = self._get_path_parts(name)
+        ret = Conf(self._cd, self._location + name_parts, _reuse_conf_dict=True)
+        return ret
 
-    def set(self, opts):
+    def update(self, opts):
         for s,v in opts:
             check_valid_selectors(s)
             assert not isinstance(v, Conf)
