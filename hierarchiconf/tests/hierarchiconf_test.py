@@ -70,8 +70,8 @@ class Test(unittest.TestCase):
     def test_match(self):
         m = lambda s,p: hierarchiconf._match(hierarchiconf._split_to_parts_valid(s),
                                              hierarchiconf._split_to_parts_valid(p),
-                                             do_prefix_match=False, 
-                                             specificity=hierarchiconf._base_specificity)
+                                             hierarchiconf.Entry._base_specificity,
+                                             do_prefix_match=False)
         self.assertTrue(m(['lrate'], ['lrate']))
         self.assertTrue(m(['.*/lrate'], ['aa/lrate']))
         self.assertFalse(m(['.*/lrate'], ['aa/bb/lrate']))

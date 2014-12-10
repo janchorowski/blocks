@@ -17,7 +17,7 @@ prevent keys from matching prefixes of other keys
 
 Created on Oct 8, 2014
 
-@author: Jan
+@author: Jan Chorowski
 '''
 
 __all__ = ['Conf']
@@ -30,19 +30,14 @@ class AmbiguousSpecificity(Exception):
     Exception returned when two or more keys match a path with the same (maximal) specificity.
     """
 
-
-# TODO: make path selectors be instances of this, then we can up-root a subconfig and keep the specificity
-# 
-#
-class Selector(object):
-    __slots__ = ['specificity', 'selector']
+class Entry(object):
+    __slots__ = ['specificity', 'value']
     _base_specificity = (0,0)
     
-    def __init__(self, selector, specificity=_base_specificity):
-        self.selector = selector
+    def __init__(self, value, specificity=_base_specificity):
         self.specificity = specificity
+        self.value = value
     
-
 #useful regexpes
 __first_single_slash = re.compile('^/[^/]')
 __last_single_slash = re.compile('[^/]/$')
@@ -110,7 +105,7 @@ def _split_to_parts_valid(path_or_segments):
                 parts.append('//')
     return parts[1:]
 
-def _match(selector_parts, path_parts, do_prefix_match, specificity):
+def _match(selector_parts, path_parts, specificity, do_prefix_match):
     """
     Internal function: little validation is made.
     
@@ -128,14 +123,15 @@ def _match(selector_parts, path_parts, do_prefix_match, specificity):
     
     - selector_parts: (list of str) selector split into parts (wildcards '//', and regexpes)
     - path_parts: (list of str) path split into single indentifiers along it
+    - specificity: base specificity of the match. For recurrent calls only.
     - do_prefix_match: if True only checks if the path matches the beginning of a selector. 
       It returns the unmatched part of the selector.
-    - specificity: base specificity of the match. For recurrent calls only.
+    
     
     """
     if path_parts == []:
         if do_prefix_match:
-            return selector_parts
+            return selector_parts, specificity
         
         if selector_parts==[]:
             return specificity
@@ -156,11 +152,11 @@ def _match(selector_parts, path_parts, do_prefix_match, specificity):
             is_match = re.match(sekector_tail_head, skipped_head)
             if is_match and is_match.end()==len(skipped_head):
                 return _match(selector_tail, path_parts[skipped_levels:], 
-                              do_prefix_match=do_prefix_match, specificity=specificity)
+                              specificity, do_prefix_match)
         
         #if we are here, then no path component matched the selector after wildcard
         if do_prefix_match:
-            return selector_parts
+            return selector_parts, specificity
         else:
             return None
     
@@ -173,7 +169,7 @@ def _match(selector_parts, path_parts, do_prefix_match, specificity):
         else:
             new_specificity[1] += 1
         return _match(selector_tail, path_parts[1:],
-                      do_prefix_match, new_specificity)
+                       new_specificity, do_prefix_match)
     else:
         return None
     
@@ -199,35 +195,33 @@ class Conf(object):
         self._location=_split_to_parts_valid(location)
         
         if _reuse_conf_dict:
-            self._cd = conf_dict
+            self._conf_dict = conf_dict
         else:
-            self._cd = {} #short for conf dict
-            #flatten the namespace
-            for s,v in conf_dict.iteritems():
-                self[s] = v #defer all validations to __setitem__ to have common code!
+            self._conf_dict = {}
+            self.update(conf_dict)
     
     @staticmethod
-    def _match(selector, path_parts, do_prefix_match=False):
-        check_valid_selectors(selector) #shouldn't be needed if we assume no one messes with out dict
+    def _match(selector, path_parts, specificity, do_prefix_match=False):
+        check_valid_selectors(selector) #shouldn't be needed if we assume no one messes with our dict
         selector_parts = _split_to_parts_valid([selector])
         return _match(selector_parts, path_parts, 
-                      do_prefix_match=do_prefix_match, 
-                      specificity=Selector._base_specificity)
+                      specificity=specificity,
+                      do_prefix_match=do_prefix_match)
     
     def __str__(self):    
-        return 'Conf(%s)' % ( str(dict(self._iter_location_restricted_selectors())),)
+        return 'Conf(%s)' % ( str(dict(self._iter_location_restricted_entries())),)
     
     def __repr__(self):
-        return 'Conf(%s)' % ( pformat(dict(self._iter_location_restricted_selectors())), )
+        return 'Conf(%s)' % ( pformat(dict(self._iter_location_restricted_entries())), )
     
     def _debugprint(self):
         ret = []
-        for s,v in self._cd.iteritems():
-            sel_suffix = self._match(s, self._location, do_prefix_match=True)
+        for selector,entry in self._conf_dict.iteritems():
+            sel_suffix = self._match(selector, self._location, entry.specificity, do_prefix_match=True)
             if sel_suffix is not None:
-                ret.append('%s:%s -> loc + %s' % (s, v, _selector_path_join_valid(*sel_suffix)))
+                ret.append('%s:%s -> loc + %s' % (selector, entry.value, _selector_path_join_valid(*sel_suffix)))
             else:
-                ret.append('%s:%s -> None' % (s, v))
+                ret.append('%s:%s -> None' % (selector, entry.value))
         ret = ['_location: %s' %(self._location, )] + sorted(ret)
         return '\n'.join(ret)
     
@@ -256,11 +250,11 @@ class Conf(object):
                 return self.subconf(*path_parts[:-1])[path_parts[-1]]
         
         matches = []
-        for k,v in self._cd.iteritems():
+        for selector,entry in self._conf_dict.iteritems():
             #do we need to validate the key here?
-            match_specificity = self._match(k, path_parts)
+            match_specificity = self._match(selector, path_parts, Entry._base_specificity) #entry.specificity)
             if match_specificity:
-                matches.append((match_specificity, k, v))
+                matches.append((match_specificity, selector, entry)) # entry.value))
         if not matches:
             raise KeyError(_selector_path_join_valid(*path_parts))
         if len(matches)==1:
@@ -279,11 +273,13 @@ class Conf(object):
         except KeyError:
             return default
 
-    def _iter_location_restricted_selectors(self):
-        for s,v in self._cd.iteritems():
-            sel_suffix = self._match(s, self._location, do_prefix_match=True)
+    def _iter_location_restricted_entries(self):
+        for selector,entry in self._conf_dict.iteritems():
+            sel_suffix, sel_specificity = self._match(selector, self._location, 
+                                                      Entry._base_specificity, do_prefix_match=True)
+            #sel_specificity[0]-=len(self._location)
             if sel_suffix is not None:
-                yield _selector_path_join_valid(*sel_suffix), v
+                yield _selector_path_join_valid(*sel_suffix), entry#, Entry(TODO)
 
     def __setitem__(self, selector, value):
         if isinstance(selector, str):
@@ -297,25 +293,24 @@ class Conf(object):
         if not isinstance(value, Conf):
             if s.endswith('//'):
                 raise Exception("Selectors for values can not end with a wildcard ('//')")
-            self._cd[s] = value
+            self._conf_dict[s] = value
         else:
             #v's dict is already flattened: just do the concatenation
             
             #currently we don't support triming of a configuration to a 
             #locatiot
-            for sub_selector, sub_value in value._iter_location_restricted_selectors():
+            for sub_selector, sub_value in value._iter_location_restricted_entries():
                 self[s, sub_selector] = sub_value
 
     def subconf(self, *name):
         if isinstance(name, str):
             name = (name, )
         name_parts = self._get_path_parts(name)
-        ret = Conf(self._cd, self._location + name_parts, _reuse_conf_dict=True)
+        ret = Conf(self._conf_dict, name_parts, _reuse_conf_dict=True)
         return ret
 
     def update(self, opts):
-        for s,v in opts:
+        for s,v in opts.iteritems():
             check_valid_selectors(s)
-            assert not isinstance(v, Conf)
             self[s] = v
         return self

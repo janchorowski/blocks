@@ -1,6 +1,9 @@
 import sys
 
+import numpy as np
+
 import theano
+from theano.compile.sharedvalue import SharedVariable
 
 
 def pack(arg):
@@ -82,6 +85,11 @@ def sharedX(value, name=None, borrow=False, dtype=None):
                          name=name,
                          borrow=borrow)
 
+def shared_for_expression(expression, name):
+    return theano.shared(np.zeros( (2,)*expression.ndim,
+                                   dtype=expression.dtype),
+                         name=name)
+
 def reraise_as(new_exc):
     """
     Parameters
@@ -143,3 +151,77 @@ def reraise_as(new_exc):
     new_exc.__cause__ = orig_exc_value
     new_exc.reraised = True
     raise type(new_exc), new_exc, orig_exc_traceback
+
+
+def collect_tag(outputs, tag):
+    rval = []
+    seen = set()
+
+    def _collect_tag(outputs):
+        for output in outputs:
+            if output in seen:
+                continue
+            seen.add(output)
+            if hasattr(output.tag, tag):
+                rval.append(getattr(output.tag, tag))
+            owner = output.owner
+            if owner is None or owner in seen:
+                continue
+            seen.add(owner)
+            inputs = owner.inputs
+            _collect_tag(inputs)
+    _collect_tag(outputs)
+    return rval
+
+def collect_parameters(outputs):
+    rval = []
+    seen = set()
+    
+    def _collect_parameters(otputs):
+        for output in outputs:
+            if output in seen:
+                continue
+            seen.add(output)
+            owner = output.owner
+            if owner is None:
+                if isinstance(output, SharedVariable) and getattr(output.tag, 'trainable', False):
+                    rval.append(output)
+            else:
+                if not owner in seen:
+                    seen.add(owner)
+                    inputs = owner.inputs
+                    _collect_parameters(inputs)
+    _collect_parameters(outputs)
+    return rval
+
+
+def attach_context(context, inputs):
+    ret = []
+    for input in inputs:
+        reti = input.copy()
+        reti.tag.context = context
+        ret.append(reti)
+    return ret
+
+def find_context(input, location=[]):
+    seen = set()
+    def _find_context(inputs):
+        for input in inputs:
+            if hasattr(input.tag, 'context'):
+                return input.tag.context
+            if input in seen:
+                continue
+            seen.add(input)
+            
+            owner = input.owner
+            if owner is None or owner in seen:
+                continue
+            seen.add(owner)
+            inputs = owner.inputs
+            return _find_context(inputs)
+        return None
+    
+    context = _find_context([input])
+    for node in seen: #cache for later use
+        node.tag.context = context
+    return context.subconf(location)
