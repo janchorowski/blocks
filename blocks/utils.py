@@ -98,6 +98,12 @@ def shared_floatx(value, name=None, borrow=False, dtype=None):
                          borrow=borrow)
 
 
+def shared_for_expression(expression, name):
+    return theano.shared(numpy.zeros((2,) * expression.ndim,
+                                     dtype=expression.dtype),
+                         name=name)
+
+
 def reraise_as(new_exc):
     """
     Parameters

@@ -7,7 +7,7 @@ from theano import tensor
 from theano import Variable
 
 from blocks.graph import ComputationGraph
-from blocks.select import Selector
+from blocks.select import BrickSelection
 from blocks.serialization import save_params, load_params
 
 logger = logging.getLogger(__name__)
@@ -38,8 +38,8 @@ class GroundhogModel(object):
     """Wraps a model into a Groundhog compatible interface."""
 
     def __init__(self, bricks, cost):
-        if not isinstance(bricks, Selector):
-            bricks = Selector(bricks)
+        if not isinstance(bricks, BrickSelection):
+            bricks = BrickSelection(bricks)
         if isinstance(cost, Variable):
             cost = ComputationGraph(cost)
         self.bricks = bricks
