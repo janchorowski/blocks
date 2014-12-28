@@ -18,7 +18,7 @@ class BaseRecurrent(Brick):
 
     @application
     def initial_state(self, state_name, batch_size, *args, **kwargs):
-        """Return an initial state for an application call.
+        r"""Return an initial state for an application call.
 
         Parameters
         ----------
@@ -26,9 +26,9 @@ class BaseRecurrent(Brick):
             The name of the state.
         batch_size : int
             The batch size.
-        *args
+        \*args
             The positional arguments of the application call.
-        **kwargs
+        \*\*kwargs
             The keyword arguments of the application call.
 
         """
@@ -284,7 +284,7 @@ class Recurrent(BaseRecurrent, Initializable):
 
 
 class GatedRecurrent(BaseRecurrent, Initializable):
-    """Gated recurrent neural network.
+    u"""Gated recurrent neural network.
 
     Gated recurrent neural network (GRNN) as introduced in [CvMG14]_. Every
     unit of a GRNN is equiped with update and reset gates that facilitate
@@ -310,8 +310,8 @@ class GatedRecurrent(BaseRecurrent, Initializable):
     See :class:`Initializable` for initialization parameters.
 
     .. [CvMG14] Kyunghyun Cho, Bart van Merriënboer, Çağlar Gülçehre,
-        Dzmitry Bahdanau, Fethi Bougares, Holger Schwenk, and Yoshua Bengio,
-        *Learning Phrase Representations using RNN Encoder-Decoder
+        Dzmitry Bahdanau, Fethi Bougares, Holger Schwenk, and Yoshua
+        Bengio, *Learning Phrase Representations using RNN Encoder-Decoder
         for Statistical Machine Translation*, EMNLP (2014), pp. 1724-1734.
 
     """
