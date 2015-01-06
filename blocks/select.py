@@ -20,6 +20,7 @@ Guys comment do we want this:
 
 import logging
 import re
+import operator
 
 import warnings
 
@@ -130,8 +131,8 @@ class FieldSelector(AbstractSelector):
         for path, brick in paths_to_bricks.iteritems():
             for c in getattr(brick, self.field_name, []):
                 yield ('{}.{}[{}]'.format(path,
-                                              self.field_name,
-                                              c.name),
+                                          self.field_name,
+                                          c.name),
                        c)
 
 
@@ -168,8 +169,8 @@ class AllDescendantsSelector(AbstractSelector):
         def list_subbricks(path, brick):
             yield path, brick
             for child in brick.children:
-                for c in  list_subbricks("{}/{}".format(path, child.name),
-                                         child):
+                for c in list_subbricks("{}/{}".format(path, child.name),
+                                        child):
                     yield c
 
         for path, brick in paths_to_bricks.iteritems():
@@ -212,44 +213,85 @@ class RegexpSelector(AbstractSelector):
         return self.name_re.match(brick.name) is not None
 
 
+class NotFound():
+    pass
+
+
+def recurrent_getattr(obj, fields):
+    """Recursively get fields of obj.
+
+    """
+    for f in fields:
+        if obj is NotFound:
+            break
+        obj = getattr(obj, f, NotFound)
+    return obj
+
+
+def recurrent_setattr(obj, fields, value):
+    """Recursively set fields of obj.
+
+    """
+    for f in fields[::-1]:
+        obj = getattr(obj, f)
+    return setattr(obj, fields[-1], value)
+
+
 class AttributeMatchSelector(AbstractSelector):
     """
     Realize matches by tests on attributes (by default on the name).
 
     Parses:
     name
-    \@attr
+    \@attr?
     \@attr == value
+    \@attr != value
     """
+    _operator_dict = {'==': operator.eq,
+                      '!=': operator.ne,
+                      }
+
     PYTHON_IDENTIFIER_RE = re.compile('^[^\d\W]\w*')
-    ATTR_CHECK_RE = re.compile('^@([^\d\W]\w*)(\s*==\s*([^\d\W]\w*))?')
+    ATTR_CHECK_RE = re.compile('^@([^\d\W]\w*'  # @ single identifier
+                               '(?:\.[^\d\W]\w*)*)'  # dotted subfields
+                               '(?:\?|'  # a ? or..
+                               '(?:\s*({})\s*([^\d\W]\w*))'  # op & identifier
+                               ')'  #
+                               .format('|'.join(_operator_dict.keys())))
 
     @staticmethod
     def partial_parse_path(path):
         # 1. try a direct match on name
         m = AttributeMatchSelector.PYTHON_IDENTIFIER_RE.match(path)
         if m:
-            return m.end(), AttributeMatchSelector('name', m.group(0))
+            return m.end(), AttributeMatchSelector('name',
+                                                   operator.eq,
+                                                   m.group(0))
         # 2. try a match on attribute value
         m = AttributeMatchSelector.ATTR_CHECK_RE.match(path)
         if m:
-            attr_name, eq_check, attr_val = m.groups()
-            return m.end(), AttributeMatchSelector(attr_name, attr_val,
-                                           hasattr_test=eq_check is None)
+            attr_name, op, attr_val = m.groups()
+            if op is not None:
+                op = AttributeMatchSelector._operator_dict[op]
+            else:
+                op = operator.is_not
+                attr_val = NotFound
+            return m.end(), AttributeMatchSelector(attr_name,
+                                                   op,
+                                                   attr_val)
         return 0, None
 
-    def __init__(self, attr_name, attr_val, hasattr_test=False, **kwargs):
+    def __init__(self, attr_name, operator, attr_val, **kwargs):
         super(AttributeMatchSelector, self).__init__(**kwargs)
-        self.attr_name = attr_name
+        self.attr_names = attr_name
+        if isinstance(self.attr_names, str):
+            self.attr_names = self.attr_names.split('.')
         self.attr_val = attr_val
-        self.hasattr_test = hasattr_test
+        self.operator = operator
 
     def _match(self, brick):
-        if self.hasattr_test:
-            return hasattr(brick, self.attr_name)
-        else:
-            return (hasattr(brick, self.attr_name) and
-                    getattr(brick, self.attr_name) == self.attr_val)
+        val = recurrent_getattr(brick, self.attr_names)
+        return self.operator(val, self.attr_val)
 
 
 class TerminatorSelector(AbstractSelector):
@@ -261,6 +303,81 @@ class TerminatorSelector(AbstractSelector):
     @staticmethod
     def partial_parse_path(path):
         raise SelectorParseException()
+
+
+# Non-parsable selectors
+class Filter(AbstractSelector):
+    def __init__(self, filter_fun, **kwargs):
+        super(Filter, self).__init__(**kwargs)
+        self.filter_fun = filter_fun
+
+    def _match(self, brick):
+        return self.filter_fun(brick)
+
+
+def _op_in(v, s):
+    return v in s
+
+
+def in_(set_or_attr_name, value_set=None):
+    """Select based on set membership.
+
+    Two variants are supported:
+    1. in_(value_set) selects bricks that are in `value_set`
+    2. in_(attr_name, value_set) selects bricks whose attribute (or sub-
+       attributes) are in the `value_set`.
+
+    Parameters
+    ----------
+    attr_name : string
+        The name of the attribute, or dot-delimited chain of attribute names.
+    value_set : set
+        Set of values in which membership is evaluated.
+
+    """
+    if value_set:
+        return AttributeMatchSelector(set_or_attr_name,
+                                      _op_in,
+                                      value_set)
+    else:
+        return Filter(lambda brick: brick in set_or_attr_name)
+
+
+class BrickSelection(set):
+    """A set of selected bricks. Provides conveninece methods on sets.
+
+    """
+
+    def enumerate(self, selector):
+        if not isinstance(selector, AbstractSelector):
+            selector = Selector(selector)
+        return BrickSelection(selector.enuerate(self))
+
+    def get_params(self):
+        """Select all parameters.
+
+        Shorthand for:
+            Selector('//.params').enumerate_paths(self)
+
+        """
+        return Selector('//.params').enumerate_paths(self)
+
+    def select(self, path):
+        """Compatibility with old interface select method
+
+        It differs from the :meth:`enumerate` method in the way forward
+        slash is treated: select ignores it, while enumerate will select
+        children.
+
+        """
+        if path.startswith('/') and not path.startswith('//'):
+            path = path[1:]
+        return self.enumerate(path)
+
+    def setattr(self, name, value):
+        fields = name.split('.')
+        for o in self:
+            recurrent_setattr(o, fields, value)
 
 
 class Selector(AbstractSelector):
@@ -292,10 +409,10 @@ class Selector(AbstractSelector):
     def enumerate(self, bricks):
         for sel in self.selectors:
             bricks = set(sel.enumerate(bricks))
-        return bricks
+        return BrickSelection(bricks)
 
     def _enumerate_paths(self, paths_to_bricks):
         for sel in self.selectors:
             paths_to_bricks = dict(sel.enumerate_paths(paths_to_bricks,
-                                                        None))
+                                                       None))
         return paths_to_bricks
