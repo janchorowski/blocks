@@ -1,5 +1,6 @@
 import sys
 from collections import OrderedDict
+from functools import partial
 
 import numpy
 import six
@@ -353,3 +354,61 @@ def ipdb_breakpoint(x):
     """
     import ipdb
     ipdb.set_trace()
+
+
+class SkipCache(object):
+    """A class that doesn't pickle its __cache__ field."""
+    def __getstate__(self):
+        state = dict(self.__dict__)
+        del state['__cache__']
+        return state
+
+#  adapted after
+#  http://code.activestate.com/recipes/577452-a-memoize-decorator-for-instance-methods/
+
+
+class cached(object):
+    """A decorator for an argumentless method that caches its output.
+
+    The decorator is meant to be used on members of :class:`SkipCache`
+    class. It caches the output of of the function in the __cache__ dict.
+    This dict is not pickled, hence it can store non-picklable objects such
+    as Theano expressions.
+
+    .. warning::
+        Please note that the cache does not verify that fields of "self"
+        have not changed.
+
+    Arguments
+    ---------
+    func : python callable
+        The function that takes "self" as the only argument whose value
+        will be cached.
+
+    """
+    def __init__(self, func):
+        self.func = func
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self.func
+        return partial(self, obj)
+
+    def __call__(self, *args, **kwargs):
+        obj = args[0]
+        if not isinstance(obj, SkipCache):
+            raise Exception("Please use the @cached decorator on methods of"
+                            " SkipCache instances to prevent pickling the"
+                            " cache")
+        if len(args) > 1 or len(kwargs) > 0:
+            raise Exception('Please use the @cached decorator on methods'
+                            ' that take "self" as their only argument')
+        cache = getattr(obj, '__cache__', {})
+        obj.__cache__ = cache
+
+        key = (self.func)
+        try:
+            res = cache[key]
+        except KeyError:
+            res = cache[key] = self.func(*args, **kwargs)
+        return res
