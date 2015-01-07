@@ -141,23 +141,36 @@ class StateInitializer(MainLoopExtension):
         self.number_batches_seen_in_epoch = 0
 
     def initialize_state(self, state):
+        expressions = state.expressions
+        state.__dict__ = {}
         state.number_batches_seen = self.number_batches_seen
         state.number_epochs_seen = self.number_epochs_seen
         state.number_batches_seen_in_epoch = self.number_batches_seen_in_epoch
-        state.expressions = defaultdict(lambda: {})
+        state.expressions = expressions
         state.additional_monitors = []
         state.continue_training = True
 
     def on_epoch(self, state):
         self.number_epochs_seen += 1
         self.number_batches_seen_in_epoch = 0
+        self.initialize_state(state)
 
     def on_minibatch(self, state):
         self.number_batches_seen += 1
         self.number_batches_seen_in_epoch += 1
+        self.initialize_state(state)
+
+    def on_timer(self, state):
+        self.initialize_state(state)
+
+    def on_traininig_start(self, state):
+        self.initialize_state(state)
+
+    def on_training_end(self, state):
+        self.initialize_state(state)
 
     def get_minibatch_updates(self):
-        return MainLoopExtension.get_minibatch_updates(self)
+        return []
 
 
 class ComputeExpressions(MainLoopExtension):
@@ -176,6 +189,7 @@ class ComputeExpressions(MainLoopExtension):
         return self.minibatch_evaluator.updates()
 
     def compute_all(self, state):
+        state.expressions = defaultdict(lambda: {})
         for name, view in self.datasets.iteritems():
             expressions = self.dataset_evaluator.evaluate(view)
             state.expressions[name] = expressions
@@ -197,14 +211,25 @@ class ComputeExpressions(MainLoopExtension):
         state.expressions[TrainState.IN_TRAINING] = expressions
 
 
+def run_extensions(extensions, state, callback_name):
+    for e in extensions:
+        getattr(e, callback_name)(state)
+
+
 class StochasticTrainLoop(object):
     """Runs a loop for one epoch of minibatch training.
 
     This class should be sub-classed by all stochastic trainers.
     """
-    def __init__(self, extensions, **kwargs):
+    def __init__(self, extensions,
+                 timer_period=None,
+                 timer_updates=None,
+                 **kwargs):
         super(StochasticTrainLoop, self).__init__(**kwargs)
         self.extensions = extensions
+        self.timer_period = timer_period
+        self.last_time
+        self.timer_updates = timer_updates
 
     def do_one_iteration(self, batch):
         raise NotImplementedError()
@@ -212,9 +237,11 @@ class StochasticTrainLoop(object):
     def __call__(self, dataset, state):
         for batch in dataset:
             self.do_one_iteration(batch)
-            state.add_batch()
-            for e in self.extensions:
-                e.on_minibatch(state)
+            run_extensions(self.extensions, state, 'on_minibatch')
+            
+            call_on_timer = False
+            if self.timer_period is not None:
+                if 
 
 
 class TrainLoop(object):
@@ -224,25 +251,27 @@ class TrainLoop(object):
                  extensions
                  ):
         update_instance(self, locals())
-        self.train_state = TrainState()
+        self.extensions = extensions
+        self.state = TrainState()
+
+    def _assert_mandatory_callbacks(self):
+        e = self.extensions
+        e.sort(key=lambda x: x.priority)
+        assert (isinstance(e[0], ComputeExpressions) or
+                isinstance(e[1], ComputeExpressions))
+        assert (isinstance(e[0], StateInitializer) or
+                isinstance(e[1], StateInitializer))
 
     def train(self, train_set_view):
-        extensions = sorted(self.extensions, key=lambda x: x.priority)
+        self._assert_mandatory_callbacks()
         epoch_train_fun = self.trainer.get_epoch_train_fun()
         state = self.state
-        assert isinstance(extensions[0], ComputeExpressions)
+        extensions = self.extensions
 
-        for e in extensions:
-            e.on_traininig_start(state)
-        state.clean()  # clean the state, keeping only its initial fields
-
+        run_extensions(extensions, state, 'on_traininig_start')
         try:
-            while state.continue_training:
+            while self.state.continue_training:
                 epoch_train_fun(train_set_view, state, extensions)
-                state.add_epoch()
-                for e in extensions:
-                    e.on_epoch(state)
+                run_extensions(extensions, state, 'on_epoch')
         finally:
-            state.clean()
-            for e in extensions:
-                e.on_traininig_end(state)
+            run_extensions(extensions, state, 'on_traininig_end')
