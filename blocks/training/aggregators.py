@@ -1,4 +1,4 @@
-"""Support for computing monitoring channels from bricks.
+"""Evaluate Theano expressions on auxiliary data and during training.
 
 """
 
@@ -165,16 +165,16 @@ def model_property(expression, name):
     return expression
 
 
-class DatasetChannelEvaluator(object):
-    """A DatasetChannelEvaluator evaluates many theano variables on a dataset.
+class DatasetEvaluator(object):
+    """A DatasetEvaluator evaluates many theano expressions on a dataset.
 
-    The DatasetChannelEvaluator provides a do-it-all method,
-    :meth:`compute_channels`, which computes values of ``channel_variables``
+    The DatasetEvaluator provides a do-it-all method,
+    :meth:`evaluate`, which computes values of ``expressions``
     on a dataset.
 
-    Alternatively, methods :meth:`initialize_computation`,
-    :meth:`process_batch`, :meth:`readout_channels` can be used with a custom
-    loop over data.
+    Alternatively, methods :meth:`_initialize_computation`,
+    :meth:`_process_batch`, :meth:`_readout_expressions` can be used
+    with a custom loop over data.
 
     The values computed on subsets of the given dataset
     are aggregated using the VariableAggregationSchemes provided in
@@ -184,10 +184,9 @@ class DatasetChannelEvaluator(object):
 
     Parameters
     ----------
-    channel_variables : list or dict
-        A list of monitored variables. Or a dict from monitoring channel
-        keys to variables. If a list is given, keys will be set to the
-        ``name``s attribute of the variables.
+    expressions : list or dict
+        A list of monitored variables. Or a dict from keys to variables.
+        If a list is given, keys will be set to the variables themselves.
 
         Each variable can be tagged with an :class:`VariableAggregationScheme`
         that specifies how the value can be computed for a data set by
@@ -199,7 +198,7 @@ class DatasetChannelEvaluator(object):
         if isinstance(channel_variables, dict):
             self.channel_variables = channel_variables
         else:
-            keyed_vars = ((v.name, v) for v in channel_variables)
+            keyed_vars = ((v, v) for v in channel_variables)
             self.channel_variables = OrderedDict(keyed_vars)
         self.inputs = graph_inputs(self.channel_variables.values())
         self._compile()
@@ -251,7 +250,7 @@ class DatasetChannelEvaluator(object):
             return dict(zip(readout.keys(), ret_vals))
         self._readout_fun = readout_fun
 
-    def initialize_computation(self):
+    def _initialize_computation(self):
         """Initialize the aggragators to process a dataset.
 
         """
@@ -259,22 +258,22 @@ class DatasetChannelEvaluator(object):
         if self._initialize_fun is not None:
             self._initialize_fun()
 
-    def process_batch(self, batch):
+    def _process_batch(self, batch):
         if not self._initialized:
-            self.initialize_computation()
+            self._initialize_computation()
         batch = dict_subset(batch, self._input_names)
         if self._accumulate_fun is not None:
             self._accumulate_fun(**batch)
 
-    def readout_channels(self):
+    def _readout_expressions(self):
         if not self._initialized:
             raise Exception("To readout you must first initialize, then"
                             "process batches!")
         self._initialized = False
         return self._readout_fun()
 
-    def compute_channels(self, data_set_view):
-        """Compute the monitored statistics over an iterable data set
+    def evaluate(self, data_set_view):
+        """Compute the expressions over an iterable data set
 
         Parameters
         ----------
@@ -283,18 +282,71 @@ class DatasetChannelEvaluator(object):
 
         Returns
         -------
-        dict from variable names (or from the keys of the
+        dict from variables (or from the keys of the
             monitored_variables argument to __init__) to the values
             computed on the provided dataset.
 
         """
-        self.initialize_computation()
+        self._initialize_computation()
 
         if self._accumulate_fun is not None:
             for batch in data_set_view:
-                self.process_batch(batch)
+                self._process_batch(batch)
         else:
             logger.debug('Only constant monitors are used, will not'
                          'iterate the over data!')
 
-        return self.readout_channels()
+        return self._readout_expressions()
+
+
+class MinibatchEvaluator(object):
+    """Helper to evaluate several theano variables on batches during training.
+
+    The MinibatchEvaluator allocates storage for each of the variables given
+    to its constructor. It then provides:
+
+    - a list of updates which should be called by the training function
+      on every minibatch. These updates store computed values in the
+      shared variables.
+
+    - a function which reads the shared variables and returns a dict from
+        names (or channel keys) their values.
+
+    Parameters
+    ----------
+    expressions : list or dict
+        A list of monitored variables. Or a dict from keys to variables.
+        If a list is given, keys will be set to the variables themselves.
+
+    """
+    def __init__(self, monitored_variables):
+        if isinstance(monitored_variables, dict):
+            monitored_variables = monitored_variables
+        else:
+            keyed_vars = ((v, v) for v in monitored_variables)
+            monitored_variables = OrderedDict(keyed_vars)
+
+        self._updates = []
+        self._storage = OrderedDict()
+        for k, v in monitored_variables.iteritems():
+            shared_v = shared_for_expression(v)
+            self._storage[k] = shared_v
+            self._updates.append((shared_v, v))
+
+    @property
+    def updates(self):
+        """Updates that have to be called for each minibatch.
+
+        """
+        return self._updates
+
+    def read_expressions(self):
+        """Read values of the expressions computed on the last minibatch.
+
+        Returns
+        -------
+        """
+        values = OrderedDict()
+        for k, sv in self._storage.iteritems():
+            values[k] = sv.get_value(borrow=False)
+        return values
