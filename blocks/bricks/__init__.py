@@ -500,7 +500,7 @@ class Softmax(Activation):
         return tensor.nnet.softmax(input_)
 
     @application
-    def categorical_cross_entropy(self, y, x):
+    def categorical_cross_entropy(self, y, x, average=True):
         """Return computationally stable softmax cost.
 
         Parameters
@@ -512,6 +512,8 @@ class Softmax(Activation):
         x : :class:`~tensor.TensorVariable`
             Each slice along axis represents energies of a distribution,
             that is pre-softmax values.
+        average : bool
+            Whether to compute the mean cost, or return individual costs
 
         Returns
         -------
@@ -525,11 +527,13 @@ class Softmax(Activation):
             flat_log_prob = log_prob.flatten()
             range_ = tensor.arange(y.shape[0])
             flat_indices = y + range_ * x.shape[1]
-            cost = -tensor.mean(flat_log_prob[flat_indices])
+            cost = -flat_log_prob[flat_indices]
         elif y.ndim == x.ndim:
-            cost = -tensor.mean((log_prob * y).sum(axis=1))
+            cost = -(log_prob * y).sum(axis=1)
         else:
             raise TypeError('rank mismatch between x and y')
+        if average:
+            cost = tensor.mean(cost)
         return cost
 
 
