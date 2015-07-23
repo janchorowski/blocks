@@ -537,7 +537,7 @@ class Softmax(Activation):
         return cost
 
 
-class Sequence(Brick):
+class Sequence(Initializable):
     """A sequence of bricks.
 
     This brick applies a sequence of bricks, assuming that their in- and
