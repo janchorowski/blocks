@@ -675,6 +675,33 @@ class AdaptiveStepClipping(StepRule):
                        (self.clip_level, clip_level_up)]
 
 
+class BurnIn(StepRule):
+    """Zeroes the updates until a number of steps is performed.
+
+
+    Parameters
+    ----------
+    num_steps : int, default 0
+        The number of steps during which updates are disabled
+
+    Attributes
+    ----------
+    num_steps : :class:`.tensor.TensorSharedVariable`
+        The remaining number of burn_in steps
+
+    """
+    def __init__(self, num_steps=0):
+        self.num_steps = theano.shared(num_steps)
+
+    def compute_steps(self, previous_steps):
+        multiplier = tensor.switch(self.num_steps <= 0,
+                                   1, 0)
+        steps = OrderedDict(
+            (parameter, step * multiplier)
+            for parameter, step in previous_steps.items())
+        return steps, [(self.num_steps, tensor.maximum(0, self.num_steps - 1))]
+
+
 class VariableClipping(StepRule):
     """Clip the maximum norm of individual variables along certain axes.
 
