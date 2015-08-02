@@ -10,8 +10,9 @@ from picklable_itertools.extras import equizip
 
 from blocks.config import config
 from blocks.bricks.base import application, _Brick, Brick, lazy
-from blocks.roles import add_role, WEIGHT, BIAS
+from blocks.roles import add_role, WEIGHT, BIAS, PARAMETER
 from blocks.utils import pack, shared_floatx_nans
+from blocks.initialization import Constant
 
 logger = logging.getLogger(__name__)
 
@@ -312,6 +313,59 @@ class Bias(Feedforward, Initializable):
         self.dim = value
 
     input_dim = output_dim = property(_get_dim, _set_dim)
+
+
+class PReLU(Feedforward, Initializable):
+    """Rectifier with a learned negative slope.
+
+    See also: [He2015]_.
+
+    .. [He2015] K. He at al. Delving Deep into Rectifiers:
+        Surpassing Human-Level Performance on IageNet Classification
+
+    """
+    @lazy(allocation=['dim'])
+    def __init__(self, dim, tie_slopes=False, **kwargs):
+        super(PReLU, self).__init__(**kwargs)
+        self.dim = dim
+        self.tie_slopes = tie_slopes
+        if self.tie_slopes and self.dim is None:
+            self.dim = 1
+        self.slopes_init = Constant(0.25)
+
+    def _allocate(self):
+        dim = self.output_dim
+        if self.tie_slopes:
+            dim = 1
+        a = shared_floatx_nans((dim,), name='a',
+                               broadcastable=(self.tie_slopes,))
+        add_role(a, PARAMETER)
+        self.parameters.append(a)
+
+    def _initialize(self):
+        a, = self.parameters
+        self.slopes_init.initialize(a, self.rng)
+
+    @application(inputs=['input_'], outputs=['output'])
+    def apply(self, input_):
+        """Apply the PReLU activation: x if x>=0 else a*x
+        """
+        a, = self.parameters
+        return tensor.switch(input_ >= 0, input_, input_ * a)
+
+    def get_dim(self, name):
+        if name in ['input_', 'output']:
+            return self.dim
+        super(PReLU, self).get_dim(name)
+
+    def _get_dim(self):
+        return self.dim
+
+    def _set_dim(self, value):
+        self.dim = value
+
+    input_dim = output_dim = property(_get_dim, _set_dim)
+
 
 
 class Maxout(Brick):
@@ -620,6 +674,20 @@ class LinearRectifier(LinearActivation):
 class LinearLogistic(LinearActivation):
     def __init__(self, **kwargs):
         super(LinearLogistic, self).__init__(activation=Logistic(), **kwargs)
+
+
+class LinearPReLU(LinearActivation):
+    def __init__(self, **kwargs):
+        super(LinearPReLU, self).__init__(activation=PReLU(), **kwargs)
+
+    @property
+    def output_dim(self):
+        return self.linear.output_dim
+
+    @output_dim.setter
+    def output_dim(self, value):
+        self.linear.output_dim = value
+        self.activation.output_dim = value
 
 
 class Sequence(Initializable):
