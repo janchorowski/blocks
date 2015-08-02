@@ -170,12 +170,11 @@ class Sum_(AggregationScheme):
         summand_zeros = tensor.as_tensor(self.summand).zeros_like()
 
         conditional_update_sum = self.summand + tensor.switch(initialized,
-                                                       summand_acc,
-                                                       summand_zeros)
+                                                              summand_acc,
+                                                              summand_zeros)
 
         initialization_updates = [(summand_acc,
                                    tensor.zeros_like(summand_acc)),
-
                                   (initialized, 0.)]
         accumulation_updates = [(summand_acc,
                                  conditional_update_sum),
