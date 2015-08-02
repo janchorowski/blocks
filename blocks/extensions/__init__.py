@@ -8,7 +8,7 @@ import progressbar
 from six import add_metaclass
 from toolz import first
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 
 
 def callback(func):
