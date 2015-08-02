@@ -159,6 +159,9 @@ class Orthogonal(NdarrayInitialization):
     Only works for 2D arrays.
 
     """
+    def __init__(self, gain=1):
+        self.gain = gain
+
     def generate(self, rng, shape):
         if len(shape) != 2:
             raise ValueError
@@ -169,7 +172,7 @@ class Orthogonal(NdarrayInitialization):
             M = rng.randn(*shape).astype(theano.config.floatX)
             Q, R = numpy.linalg.qr(M)
             Q = Q * numpy.sign(numpy.diag(R))
-            return Q
+            return Q * self.gain
 
         M1 = rng.randn(shape[0], shape[0]).astype(theano.config.floatX)
         M2 = rng.randn(shape[1], shape[1]).astype(theano.config.floatX)
@@ -182,7 +185,7 @@ class Orthogonal(NdarrayInitialization):
         Q2 = Q2 * numpy.sign(numpy.diag(R2))
 
         n_min = min(shape[0], shape[1])
-        return numpy.dot(Q1[:, :n_min], Q2[:n_min, :])
+        return numpy.dot(Q1[:, :n_min], Q2[:n_min, :]) * self.gain
 
 
 class Sparse(NdarrayInitialization):
