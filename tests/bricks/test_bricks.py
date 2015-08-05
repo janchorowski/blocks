@@ -294,7 +294,7 @@ def test_linear():
     assert_allclose(y.eval({x: x_val}), x_val.dot(2 * numpy.ones((16, 8))))
 
 
-def test_linear_activations_with_prelu():
+def test_linear_activation():
     x = tensor.matrix()
     linear_tanh = LinearTanh(weights_init=Constant(2),
                              biases_init=Constant(1))
