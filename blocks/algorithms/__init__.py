@@ -10,9 +10,11 @@ from picklable_itertools.extras import equizip
 import theano
 from six import add_metaclass
 from theano import tensor
+from theano.tensor.subtensor import inc_subtensor
 
 from blocks.graph import ComputationGraph
-from blocks.roles import add_role, ALGORITHM_HYPERPARAMETER, ALGORITHM_BUFFER
+from blocks.roles import (add_role, ALGORITHM_HYPERPARAMETER, ALGORITHM_BUFFER,
+                          has_roles, SPARSE_SELECTION)
 from blocks.theano_expressions import l2_norm
 from blocks.utils import (dict_subset, pack, shared_floatx,
                           shared_floatx_zeros_matching)
@@ -248,7 +250,16 @@ class GradientDescent(DifferentiableCostMinimizer):
         # the parameters were given. Keep it like that to ensure
         # reproducibility.
         for parameter in self.parameters:
-            all_updates.append((parameter, parameter - self.steps[parameter]))
+            if has_roles(parameter, [SPARSE_SELECTION]):
+                selection = parameter
+                parameter, _selector = parameter.owner.inputs
+                parameter, = ComputationGraph(parameter).parameters
+                all_updates.append(
+                    (parameter,
+                     inc_subtensor(selection, -self.steps[selection])))
+            else:
+                all_updates.append((parameter,
+                                    parameter - self.steps[parameter]))
         all_updates += self.step_rule_updates
         self._function = theano.function(
             self.inputs, [], updates=all_updates, **self.theano_func_kwargs)

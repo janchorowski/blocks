@@ -142,6 +142,13 @@ class FilterRole(WeightRole):
 FILTER = FilterRole()
 
 
+class SparseSelection(VariableRole):
+    pass
+
+#: A parameter of the model with sparse gradients
+SPARSE_SELECTION = SparseSelection()
+
+
 class DropoutRole(VariableRole):
     pass
 
