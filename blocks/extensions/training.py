@@ -33,7 +33,10 @@ class SharedVariableModifier(SimpleExtension):
         super(SharedVariableModifier, self).__init__(**kwargs)
         self.parameter = parameter
         self.function = function
-        self.num_args = len(inspect.getargspec(function).args)
+        try:
+            self.num_args = len(inspect.getargspec(function).args)
+        except:
+            self.num_args = 2
 
     def do(self, which_callback, *args):
         iterations_done = self.main_loop.log.status['iterations_done']
