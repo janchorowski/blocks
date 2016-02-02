@@ -302,7 +302,8 @@ class Softplus(Activation):
 class Rectifier(Activation):
     @application(inputs=['input_'], outputs=['output'])
     def apply(self, input_):
-        return tensor.switch(input_ > 0, input_, 0)
+        # return tensor.switch(input_ > 0, input_, 0)
+        return tensor.nnet.relu(input_)
 
 
 class Softmax(Brick):
