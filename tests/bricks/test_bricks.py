@@ -3,9 +3,10 @@ import six
 import theano
 from numpy.testing import assert_allclose, assert_raises
 from theano import tensor
+from six.moves import cPickle
 
 from blocks.bricks import (Identity, Linear, Maxout, LinearMaxout, MLP, Tanh,
-                           Sequence, Random)
+                           Sequence, Random, Logistic, Softplus, Softmax)
 from blocks.bricks.base import application, Brick, lazy, NoneAllocation
 from blocks.bricks.parallel import Parallel, Fork
 from blocks.filter import get_application_call, get_brick
@@ -249,6 +250,10 @@ def test_application():
     assert TestBrick.delegated_apply.inputs == ['w']
 
 
+def test_application_serialization():
+    assert id(cPickle.loads(cPickle.dumps(Linear.apply))) == id(Linear.apply)
+
+
 def test_apply():
     brick = TestBrick(0)
     assert TestBrick.apply(brick, [0]) == [0, 1]
@@ -323,9 +328,17 @@ def test_maxout():
 def test_activations():
     x = tensor.vector()
     x_val = numpy.random.rand(8).astype(theano.config.floatX)
+    exp_x_val = numpy.exp(x_val)
+
     assert_allclose(x_val, Identity().apply(x).eval({x: x_val}))
     assert_allclose(numpy.tanh(x_val), Tanh().apply(x).eval({x: x_val}),
                     rtol=1e-06)
+    assert_allclose(numpy.log(1 + exp_x_val),
+                    Softplus(x).apply(x).eval({x: x_val}), rtol=1e-6)
+    assert_allclose(exp_x_val / numpy.sum(exp_x_val),
+                    Softmax(x).apply(x).eval({x: x_val}).flatten(), rtol=1e-6)
+    assert_allclose(1.0 / (1.0 + numpy.exp(-x_val)),
+                    Logistic(x).apply(x).eval({x: x_val}), rtol=1e-6)
 
 
 def test_mlp():

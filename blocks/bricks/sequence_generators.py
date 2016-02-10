@@ -33,7 +33,7 @@ from abc import ABCMeta, abstractmethod
 from six import add_metaclass
 from theano import tensor
 
-from blocks.bricks import Initializable, Random, Bias
+from blocks.bricks import Initializable, Random, Bias, NDimensionalSoftmax
 from blocks.bricks.base import application, Brick, lazy
 from blocks.bricks.parallel import Fork, Merge
 from blocks.bricks.lookup import LookupTable
@@ -230,7 +230,7 @@ class BaseSequenceGenerator(Initializable):
 
         # Add auxiliary variable for per sequence element cost
         application_call.add_auxiliary_variable(
-            (costs.sum() / mask.sum()) if mask is not None else costs.sum(),
+            (costs.sum() / mask.sum()) if mask is not None else costs.mean(),
             name='per_sequence_element')
         return cost
 
@@ -280,6 +280,13 @@ class BaseSequenceGenerator(Initializable):
         for name, variable in list(glimpses.items()) + list(states.items()):
             application_call.add_auxiliary_variable(
                 variable.copy(), name=name)
+
+        # This variables can be used to initialize the initial states of the
+        # next batch using the last states of the current batch.
+        for name in self._state_names:
+            application_call.add_auxiliary_variable(
+                results[name][-1].copy(), name=name+"_final_value")
+
         return costs
 
     @recurrent
@@ -582,6 +589,19 @@ class AbstractEmitter(Brick):
 
     :class:`SoftmaxEmitter` : for integer outputs
 
+    Notes
+    -----
+    An important detail about the emitter cost is that it will be
+    evaluated with inputs of different dimensions so it has to be
+    flexible enough to handle this. The two ways in which it can be
+    applied are:
+
+        1. In :meth:BaseSequenceGenerator.cost_matrix where it will
+        be applied to the whole sequence at once.
+
+        2. In :meth:BaseSequenceGenerator.generate where it will be
+        applied to only one step of the sequence.
+
     """
     @abstractmethod
     def emit(self, readouts):
@@ -664,14 +684,14 @@ class SoftmaxEmitter(AbstractEmitter, Initializable, Random):
 
     """
     def __init__(self, initial_output=0, **kwargs):
-        self.initial_output = initial_output
         super(SoftmaxEmitter, self).__init__(**kwargs)
+        self.initial_output = initial_output
+        self.softmax = NDimensionalSoftmax()
+        self.children = [self.softmax]
 
     @application
     def probs(self, readouts):
-        shape = readouts.shape
-        return tensor.nnet.softmax(readouts.reshape(
-            (tensor.prod(shape[:-1]), shape[-1]))).reshape(shape)
+        return self.softmax.apply(readouts, extra_ndim=readouts.ndim - 2)
 
     @application
     def emit(self, readouts):
@@ -686,13 +706,8 @@ class SoftmaxEmitter(AbstractEmitter, Initializable, Random):
         # WARNING: unfortunately this application method works
         # just fine when `readouts` and `outputs` have
         # different dimensions. Be careful!
-        probs = self.probs(readouts)
-        max_output = probs.shape[-1]
-        flat_outputs = outputs.flatten()
-        num_outputs = flat_outputs.shape[0]
-        return -tensor.log(
-            probs.flatten()[max_output * tensor.arange(num_outputs) +
-                            flat_outputs].reshape(outputs.shape))
+        return self.softmax.categorical_cross_entropy(
+            outputs, readouts, extra_ndim=readouts.ndim - 2)
 
     @application
     def initial_outputs(self, batch_size):

@@ -296,7 +296,9 @@ class Application(object):
                 brick not in last_brick.children):
             raise ValueError('Brick ' + str(self.call_stack[-1]) + ' tries '
                              'to call brick ' + str(self.brick) + ' which '
-                             'is not in the list of its children.')
+                             'is not in the list of its children. This could '
+                             'be caused because an @application decorator is '
+                             'missing.')
         self.call_stack.append(brick)
         try:
             outputs = self.application_function(brick, *args, **kwargs)
@@ -323,6 +325,13 @@ class Application(object):
         if as_dict:
             return OrderedDict(zip(bound_application.outputs, outputs))
         return unpack(outputs)
+
+    # Application instances are used instead of usual methods in bricks.
+    # The usual methods are not pickled per-se, similarly to classes
+    # and modules. Instead, a reference to the method is put into the pickle.
+    # Here, we ensure the same behaviour for Application instances.
+    def __reduce__(self):
+        return (getattr, (self.brick, self.application_name))
 
 
 class BoundApplication(object):
@@ -370,8 +379,21 @@ def rename_function(function, new_name):
 
 
 class _Brick(ABCMeta):
-    """Metaclass which attaches brick instances to the applications."""
+    """Metaclass which attaches brick instances to the applications.
+
+    In addition picklability of :class:`Application` objects is ensured.
+    This means that :class:`Application` objects can not be added to a
+    brick class after it is created. To allow adding application methods
+    programatically, the following hook is supported: the class namespace
+    is searched for `decorators` attribute, which can contain a
+    list of functions to be applied to the namespace of the class being
+    created. These functions can arbitratily modify this namespace.
+
+    """
     def __new__(mcs, name, bases, namespace):
+        decorators = namespace.get('decorators', [])
+        for decorator in decorators:
+            decorator(mcs, name, bases, namespace)
         for attr in list(namespace.values()):
             if (isinstance(attr, Application) and
                     hasattr(attr, '_application_function')):
@@ -858,6 +880,7 @@ class ApplicationCall(Annotation):
     """
     def __init__(self, application):
         self.application = application
+        self.metadata = {}
         super(ApplicationCall, self).__init__()
 
     def add_auxiliary_variable(self, variable, roles=None, name=None):
